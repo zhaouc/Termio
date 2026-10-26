@@ -1,0 +1,41 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Termio",
+  "version": "1.0.0",
+  "identifier": "com.termio.desktop",
+  "build": {
+    "beforeDevCommand": "npm --prefix .. run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm --prefix .. run build",
+    "frontendDist": "../../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Termio",
+        "width": 1500,
+        "height": 900,
+        "minWidth": 900,
+        "minHeight": 620,
+        "resizable": true,
+        "fullscreen": false,
+        "decorations": false,
+        "shadow": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; img-src 'self' asset: data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src ipc: http://ipc.localhost https://api.github.com"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "nsis",
+    "icon": [
+      "icons/icon.ico"
+    ],
+    "category": "DeveloperTool",
+    "shortDescription": "SSH terminal and GPU server monitor",
+    "longDescription": "Termio combines SSH terminal with GPU, CPU, memory and process monitoring across Linux servers."
+  }
+}
