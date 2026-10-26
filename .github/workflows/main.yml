@@ -1,0 +1,119 @@
+name: Build Termio
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: termio-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-windows:
+    name: Build Windows EXE
+    runs-on: windows-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Enforce 99-file source limit
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $files = @(git ls-files | Where-Object { $_ -ne '' })
+          Write-Host "Tracked source files: $($files.Count) / 99"
+          if ($files.Count -gt 99) { throw "Source file count exceeded 99: $($files.Count)" }
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Run frontend tests
+        run: npm test
+
+      - name: Run Rust tests
+        run: cargo test --locked --manifest-path src/tauri/Cargo.toml
+
+      - name: Build Termio Windows EXE
+        run: npm run tauri:build -- --bundles nsis
+
+      - name: Upload Windows EXE
+        uses: actions/upload-artifact@v6
+        with:
+          name: termio-1.0.0-windows-x86_64-exe
+          path: src/tauri/target/release/bundle/nsis/*-setup.exe
+          if-no-files-found: error
+
+      - name: Package portable Windows ZIP
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = 'src/tauri/target/release/termio.exe'
+          if (-not (Test-Path $exe)) { throw "Standalone executable not found: $exe" }
+          $portable = Join-Path $env:RUNNER_TEMP 'Termio-Portable'
+          New-Item -ItemType Directory -Force -Path $portable | Out-Null
+          Copy-Item $exe (Join-Path $portable 'Termio.exe')
+          Copy-Item 'PORTABLE.md' (Join-Path $portable '使用说明.md')
+          $zip = Join-Path $env:RUNNER_TEMP 'Termio-1.0.0-Windows-x86_64-Portable.zip'
+          Compress-Archive -Path $portable -DestinationPath $zip -Force
+          if (-not (Test-Path $zip)) { throw 'Failed to create portable ZIP.' }
+
+      - name: Upload Windows portable ZIP
+        uses: actions/upload-artifact@v6
+        with:
+          name: termio-1.0.0-windows-x86_64-portable
+          path: ${{ runner.temp }}/Termio-1.0.0-Windows-x86_64-Portable.zip
+          if-no-files-found: error
+
+      - name: Smoke-test Windows EXE installer
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $nsis = Get-ChildItem 'src/tauri/target/release/bundle/nsis' -Filter '*-setup.exe' -ErrorAction Stop | Select-Object -First 1
+          if (-not $nsis) { throw 'Windows build did not produce an NSIS setup executable.' }
+          $install = Join-Path $env:RUNNER_TEMP 'termio-nsis-install'
+          New-Item -ItemType Directory -Force -Path $install | Out-Null
+          $p = Start-Process $nsis.FullName -ArgumentList "/S /D=$install" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "NSIS installation failed with exit code $($p.ExitCode)." }
+          $app = Get-ChildItem $install -Recurse -Filter 'Termio.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $app) { throw 'NSIS installation did not create Termio.exe.' }
+          $appProcess = Start-Process $app.FullName -PassThru
+          Start-Sleep -Seconds 5
+          if ($appProcess.HasExited) { throw "Installed Termio exited early with code $($appProcess.ExitCode)." }
+          # Relaunching must activate the existing window and immediately exit,
+          # not spawn another long-lived Termio instance.
+          $second = Start-Process $app.FullName -PassThru
+          for ($i = 0; $i -lt 20; $i++) {
+            Start-Sleep -Milliseconds 250
+            $second.Refresh()
+            if ($second.HasExited) { break }
+          }
+          if (-not $second.HasExited) {
+            Stop-Process -Id $second.Id -Force
+            throw 'Second Termio launch did not exit; single-instance enforcement failed.'
+          }
+          if ($second.ExitCode -ne 0) { throw "Second Termio launch returned exit code $($second.ExitCode)." }
+          $appProcess.Refresh()
+          if ($appProcess.HasExited) { throw 'First Termio instance unexpectedly exited during relaunch.' }
+          Stop-Process -Id $appProcess.Id -Force
+          $uninstaller = Get-ChildItem $install -Recurse -Filter 'uninstall.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $uninstaller) { throw 'NSIS installation did not create an uninstaller.' }
+          $u = Start-Process $uninstaller.FullName -ArgumentList '/S' -Wait -PassThru
+          if ($u.ExitCode -ne 0) { throw "NSIS uninstall failed with exit code $($u.ExitCode)." }
